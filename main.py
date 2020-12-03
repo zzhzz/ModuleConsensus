@@ -7,10 +7,10 @@ import json
 class Table:
     def __init__(self, table_name, columns, ty='static'):
         self.table_name = table_name
+        # introduce step into system
         self.idx = 0
         self.ty = ty
         self.columns = ['_time'] + columns + ([] if ty == 'static' else ['_availed'])
-        self.origin_columns = columns
         self.data = {key: [] for key in self.columns}
         self.cursor = 0
 
@@ -31,9 +31,9 @@ class Table:
         rng = range(sz) if not new_first else range(sz - 1, -1, -1)
         for row_id in rng:
             item = {key: self.data[key][row_id] for key in self.columns}
-            if cond(item) and (self.ty == 'static' or item['_availed'] == 1):
+            if cond(item) and (self.ty == 'static' or item['_availed'] == 1 ):
                 cnt += 1
-                for key in self.origin_columns:
+                for key in self.columns:
                     result[key].append(item[key])
                 if self.ty == 'stream':
                     self.data['_availed'][row_id] = 0
@@ -55,7 +55,7 @@ task_table.union({'tid': [0], 'index': [f], 'ddl': [ddl], 'greater': [greater]})
 
 tables = [
     {'val': Table('val', ['v']),
-     'get': Table('get', ['who', 'remote_name', 'local_name', 'cond', 'done'], ty='stream'),
+     'get': Table('get', ['who', 'remote_name', 'local_name', 'cond'], ty='stream'),
      'superior': Table('superior', ['order', 'who', 'v']),
      'superior_candidate': Table('superior_candidate', ['order', 'who', 'v'], ty='stream'),
      'superior_competition': Table('superior_competition', ['order', 'who', 'v'], ty='stream'),
@@ -89,7 +89,7 @@ def init(pid):
 
 
 def phase_1(task_id, index_to_decision, pid):
-    item = tables[pid]['superior_candidate'].select(lambda x: x['order'] == index_to_decision, 1)
+    item = tables[pid]['superior_candidate'].select(lambda x: x['confirm'] == 0 and x['order'] == index_to_decision, 1)
     contacts = tables[pid]['contact'].select(lambda x: True)
     for c in contacts['who']:
         put(pid, c, 'superior_candidate', item)
@@ -104,13 +104,13 @@ def phase_1(task_id, index_to_decision, pid):
         index_1, index_2 = index_f(value), index_f(cur_candidate_value)
         if index_1 == index_2 and greater(value, cur_candidate_value, index_1) > 0:
             cur_candidate, cur_candidate_value = who, value
-    tables[pid]['superior_candidate'].union({'who': [cur_candidate], 'v': [cur_candidate_value], 'order': [index_to_decision]})
+    tables[pid]['superior_candidate'].union({'who': [cur_candidate], 'v': [cur_candidate_value], 'order': [index_to_decision], 'confirm': {0}})
 
 
 def phase_2(task_id, index_to_decision, pid, ddl_gone=False):
     item = tables[pid]['superior_candidate'].select(lambda x: x['order'] == index_to_decision, 1)
     cur_candidate, cur_candidate_value = item['who'][0], item['v'][0]
-    judger_item = tables[pid]['superior'].select(lambda x: x['order'] < index_to_decision, 1)
+    judger_item = tables[pid]['superior'].select(lambda x: x['confirm'] == 1 and x['order'] < index_to_decision, 1)
     judger = judger_item['who'][0]
     task_item = tables[pid]['task'].select(lambda x: x['tid'] == task_id, 1)
     index_f = task_item['index'][0][index_to_decision]
@@ -118,7 +118,7 @@ def phase_2(task_id, index_to_decision, pid, ddl_gone=False):
     if not ddl_gone:
         if cur_candidate == pid:
             put(pid, judger, 'superior_competition', item)
-            get(pid, judger, 'superior_winner', 'superior', lambda x: x['order'] == index_to_decision)
+            get(pid, judger, 'superior_winner', 'superior', lambda x: x['confirm'] == 1 and x['order'] == index_to_decision)
     elif judger == pid:
         all_candidate = tables[pid]['superior_competition'].select(lambda x: x['order'] == index_to_decision)
         sz, temp_key = len(all_candidate['who']), {}
@@ -133,11 +133,15 @@ def phase_2(task_id, index_to_decision, pid, ddl_gone=False):
             temp_key[key].sort(key=lambda x: cmp(x[1]))
         tables[pid]['superior_winner'].union({'order': [index_to_decision],
                                               'who': [temp_key[key][0] for key in temp_key],
-                                              'v': [temp_key[key][1] for key in temp_key]})
-        all_get_request = tables[pid]['get'].select(lambda x: x['done'] == 0 and x['remote_name'] == 'superior_winner')
+                                              'v': [temp_key[key][1] for key in temp_key],
+                                              'confirm': [1 for _ in temp_key]})
+        all_get_request = tables[pid]['get'].select(lambda x: x['remote_name'] == 'superior_winner')
         sz = len(all_get_request['who'])
         for row_id in range(sz):
-            who, remote_name, cond = all_get_request['who'][row_id], all_get_request['local_name'][row_id], all_get_request['cond'][row_id]
+            # broadcast superior information for every applier.
+            who, local_name, cond = all_get_request['who'][row_id], all_get_request['local_name'][row_id], all_get_request['cond'][row_id]
+
+
 
 
 """
@@ -204,9 +208,7 @@ def consensus():
             phase_2(0, idx, pid)
         for pid in node:
             phase_2(0, idx, pid, ddl_gone=True)
-        idx = 100
-        while idx > 0:
-            idx -= 1
+
         quit()
 
 
