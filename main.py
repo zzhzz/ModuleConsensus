@@ -7,6 +7,7 @@ import json
 class Table:
     def __init__(self, table_name, columns, ty='static'):
         self.table_name = table_name
+        # introduce step into system
         self.idx = 0
         self.ty = ty
         self.columns = ['_time'] + columns + ([] if ty == 'static' else ['_availed'])
@@ -54,7 +55,7 @@ task_table.union({'tid': [0], 'index': [f], 'ddl': [ddl], 'greater': [greater]})
 
 tables = [
     {'val': Table('val', ['v']),
-     'get': Table('get', ['who', 'remote_name', 'local_name', 'cond', 'done'], ty='stream'),
+     'get': Table('get', ['who', 'remote_name', 'local_name', 'cond'], ty='stream'),
      'superior': Table('superior', ['order', 'who', 'v']),
      'superior_candidate': Table('superior_candidate', ['order', 'who', 'v'], ty='stream'),
      'superior_competition': Table('superior_competition', ['order', 'who', 'v'], ty='stream'),
@@ -134,10 +135,12 @@ def phase_2(task_id, index_to_decision, pid, ddl_gone=False):
                                               'who': [temp_key[key][0] for key in temp_key],
                                               'v': [temp_key[key][1] for key in temp_key],
                                               'confirm': [1 for _ in temp_key]})
-        all_get_request = tables[pid]['get'].select(lambda x: x['done'] == 0)
+        all_get_request = tables[pid]['get'].select(lambda x: x['remote_name'] == 'superior_winner')
         sz = len(all_get_request['who'])
         for row_id in range(sz):
-            who, remote_name, cond = all_get_request['who'][row_id], all_get_request['remote_name'][row_id], all_get_request['cond'][row_id]
+            # broadcast superior information for every applier.
+            who, local_name, cond = all_get_request['who'][row_id], all_get_request['local_name'][row_id], all_get_request['cond'][row_id]
+
 
 
 
@@ -205,9 +208,7 @@ def consensus():
             phase_2(0, idx, pid)
         for pid in node:
             phase_2(0, idx, pid, ddl_gone=True)
-        idx = 100
-        while idx > 0:
-            idx -= 1
+
         quit()
 
 
