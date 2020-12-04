@@ -131,9 +131,9 @@ def phase_2(task_id, index_to_decision, pid, step, ddl_gone=False):
             cmp = cmp_to_key(partial(greater, k=key))
             temp_key[key].sort(key=lambda x: cmp(x[1]))
         tables[pid]['superior_winner'].union(step, {'order': [index_to_decision],
-                                              'who': [temp_key[key][0] for key in temp_key],
-                                              'v': [temp_key[key][1] for key in temp_key],
-                                              'confirm': [1 for _ in temp_key]}, ty='append')
+                                                    'who': [temp_key[key][0] for key in temp_key],
+                                                    'v': [temp_key[key][1] for key in temp_key],
+                                                    'confirm': [1 for _ in temp_key]}, ty='append')
         all_get_request = tables[pid]['get'].select(lambda x: x['remote_name'] == 'superior_winner')
         sz = len(all_get_request['who'])
         for row_id in range(sz):
