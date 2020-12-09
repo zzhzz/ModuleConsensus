@@ -11,11 +11,10 @@ class Table:
         self.data = {key: [] for key in self.columns}
         self.cursor = 0
 
-
     def union(self, step, d, ty):
         d['_step'] = [step] * len(d[self.columns[1]])
         if ty == 'append':
-            self.data = dict(map(lambda k: self.data[k] + d[k], d))
+            self.data = {k: self.data[k] + d[k] for k in self.data}
         elif ty == 'override':
             self.data = d
 
@@ -37,18 +36,17 @@ class Table:
         return result
 
 
-init_step, step = 0, 1
-N = 20
+N, ddl = 10, 2
+steps = [0 for _ in range(N + 1)]
 np.random.seed(0)
 f = [lambda x: 1, lambda x: int(x/0.4)*0.4, lambda x: int(x/0.2)*0.2, lambda x: int(x/0.1)*0.1]
-ddl = 2
 dist = lambda x, k: abs(x - k)
 greater = lambda v1, v2, k: dist(v1, k) - dist(v2, k)
 
 
 tables = [
     {'val': Table('val', ['v']),
-     'get': Table('get', ['who', 'remote_name', 'remote_step', 'local_name', 'local_step', 'type', 'state_cond', 'item_cond']),
+     'get': Table('get', ['who', 'remote_name', 'remote_step', 'local_name', 'local_step', 'type', 'cond']),
      'superior': Table('superior', ['order', 'who', 'v']),
      'superior_candidate': Table('superior_candidate', ['order', 'who', 'v']),
      'superior_competition': Table('superior_competition', ['order', 'who', 'v']),
@@ -57,6 +55,9 @@ tables = [
      'colleague': Table('colleague', ['order', 'who']),
      'task': Table('task', ['tid', 'index', 'greater', 'ddl'])
      } for _ in range(N+1)]
+
+# C++: vector, ip as integer
+# 
 
 
 def put(me, peer_id, table_name, step, x, ty):
@@ -68,24 +69,28 @@ def get(me, peer_id, step, remote_table_name, remote_step, local_table_name, loc
     put(me, peer_id, 'get', step, {'who': [me],
                              'remote_name': [remote_table_name], 'remote_step': [remote_step],
                              'local_name': [local_table_name], 'local_step': [local_step],
-                             'type': ty, 'cond': [cond]}, ty='append')
+                             'type': [ty], 'cond': [cond]}, ty='append')
 
 
 def init(pid):
+    step = steps[pid]
     v = float(np.random.random(1))
-    tables[pid]['task'].union(init_step, {'tid': [0], 'index': [f], 'ddl': [ddl], 'greater': [greater]}, ty='append')
-    tables[pid]['val'].union(init_step, {'v': [v]}, ty='append')
-    tables[pid]['superior_candidate'].union(init_step, {'order': [1, 2, 3], 'who': [pid, pid, pid], 'v': [v, v, v]}, ty='override')
-    tables[pid]['superior'].union(init_step, {'order': [0], 'who': [0], 'v': [-1]}, ty='override')
+    tables[pid]['task'].union(step, {'tid': [0], 'index': [f], 'ddl': [ddl], 'greater': [greater]}, ty='append')
+    tables[pid]['val'].union(step, {'v': [v]}, ty='append')
+    tables[pid]['superior_candidate'].union(step, {'order': [1, 2, 3], 'who': [pid, pid, pid], 'v': [v, v, v]}, ty='override')
+    tables[pid]['superior'].union(step, {'order': [0], 'who': [0], 'v': [-1]}, ty='override')
     contact_sz = int(np.random.randint(low=1, high=N, size=1))
     contact_list = np.random.default_rng().choice(N, size=contact_sz, replace=False).tolist()
     contact_list = [x + 1 for x in contact_list]
-    tables[pid]['contact'].union(init_step, {'who': contact_list}, ty='override')
+    tables[pid]['contact'].union(step, {'who': contact_list}, ty='override')
+    steps[pid] = 1
 
 
-def phase_1(task_id, index_to_decision, pid, step):
-    item = tables[pid]['superior_candidate'].select(
-        lambda x: x['order'] == index_to_decision and x['_step'] == step - 1, 1)
+def phase_1(task_id, index_to_decision, pid):
+    step = steps[pid]
+    if step != 1:
+        return
+    item = tables[pid]['superior_candidate'].select(lambda x: x['order'] == index_to_decision and x['_step'] == step-1, 1)
     contacts = tables[pid]['contact'].select(lambda x: True)
     for c in contacts['who']:
         put(pid, c, 'superior_candidate', step, item, ty='append')
@@ -103,9 +108,13 @@ def phase_1(task_id, index_to_decision, pid, step):
             cur_candidate, cur_candidate_value = who, value
     tables[pid]['superior_candidate'].union(step, {'who': [cur_candidate], 'v': [cur_candidate_value],
                                                     'order': [index_to_decision]}, ty='append')
+    steps[pid] = 2
 
 
-def phase_2(task_id, index_to_decision, pid, step, ddl_gone=False):
+def phase_2(task_id, index_to_decision, pid, ddl_gone=False):
+    step = steps[pid]
+    if step != 2:
+        return
     item = tables[pid]['superior_candidate'].select(lambda x: x['order'] == index_to_decision and x['_step'] == step - 1, 1)
     cur_candidate, cur_candidate_value = item['who'][0], item['v'][0]
     judger_item = tables[pid]['superior'].select(lambda x: x['order'] == index_to_decision - 1, 1)
@@ -116,8 +125,6 @@ def phase_2(task_id, index_to_decision, pid, step, ddl_gone=False):
     if not ddl_gone:
         if cur_candidate == pid:
             put(pid, judger, 'superior_competition', step, item, ty='append')
-            get(pid, judger, step, 'superior_winner', step, 'superior', step,
-                cond=lambda x: x['order'] == index_to_decision, ty='append')
     elif judger == pid:
         all_candidate = tables[pid]['superior_competition'].select(lambda x: x['order'] == index_to_decision)
         sz, temp_key = len(all_candidate['who']), {}
@@ -131,69 +138,35 @@ def phase_2(task_id, index_to_decision, pid, step, ddl_gone=False):
             cmp = cmp_to_key(partial(greater, k=key))
             temp_key[key].sort(key=lambda x: cmp(x[1]))
         tables[pid]['superior_winner'].union(step, {'order': [index_to_decision],
-                                                    'who': [temp_key[key][0] for key in temp_key],
-                                                    'v': [temp_key[key][1] for key in temp_key],
-                                                    'confirm': [1 for _ in temp_key]}, ty='append')
-        all_get_request = tables[pid]['get'].select(lambda x: x['remote_name'] == 'superior_winner')
-        sz = len(all_get_request['who'])
+                                                    'who': [temp_key[key][0][0] for key in temp_key],
+                                                    'v': [temp_key[key][0][1] for key in temp_key],}, ty='append')
         for row_id in range(sz):
-            # broadcast superior information for every applier.
-            who, local_name, cond = all_get_request['who'][row_id], all_get_request['local_name'][row_id], all_get_request['cond'][row_id]
+            who, value = all_candidate['who'][row_id], all_candidate['v'][row_id]
+            superior = temp_key[index_f(value)][0][0]
+            put(pid, who, 'superior', step, {'order': [index_to_decision], 'who': [superior], 'v': [value]}, ty='append')
+    if ddl_gone:
+        steps[pid] = 3
 
 
-
-
-"""
-def phase_2(index_to_decision, pid, ddl_gone=False):
-    if not ddl_gone:
-        if superior[pid][index_to_decision][0] == pid:
-            put(pid, superior[pid][index_to_decision - 1][0], superior[pid][index_to_decision][1])
-            get(pid, superior[pid][index_to_decision - 1][0])
-    if ddl_gone and superior[pid][index_to_decision - 1][0] == pid:
-        index_f = f[index_to_decision]
-        d = {}
-        while buf[pid]:
-            item = buf[pid].pop(0)
-            who, value = item
-            key = index_f(value)
-            if key not in d:
-                d[key] = []
-            d[key].append((who, value, dist(value, key)))
-        for key in d:
-            d[key].sort(key=lambda x: x[2])
-        while get_buf[pid]:
-            c = get_buf[pid].pop(0)
-            print(f'{index_to_decision} broadcast to {c} {plist}')
-            put(plist, c, vlist)
-
-
-def phase_3(index_to_decision, pid):
-    if superior[pid][index_to_decision][2] == 0:
-        if superior[pid][index_to_decision][0] == pid:
-            index_f = f[index_to_decision]
-            my_key = index_f(peer_values[pid])
-            while buf[pid]:
-                item = buf[pid].pop(0)
-                plist, vlist = item
-                for p, v in zip(plist, vlist):
-                    key = index_f(v)
-                    if key == my_key:
-                        superior[pid][index_to_decision] = (p, v, 1)
-            while get_buf[pid]:
-                c = get_buf[pid].pop(0)
-                put(superior[pid][index_to_decision][0], c, superior[pid][index_to_decision][1])
-        else:
-            if len(buf[pid]) == 0:
-                get(pid, superior[pid][index_to_decision][0])
-            while buf[pid]:
-                item = buf[pid].pop(0)
-                print(f'{pid} recv {item}')
-                superior[pid][index_to_decision] = (item[0], item[1], 1)
+def phase_3(task_id, index_to_decision, pid):
+    step = steps[pid]
+    if step < 3:
+        return
+    items = tables[pid]['superior'].select(lambda x: x['order'] == index_to_decision and x['_step'] <= step, 1)
+    if len(items['_step']) == 0:
+        candidate = tables[pid]['superior_candidate'].select(lambda x: x['order'] == index_to_decision and x['_step'] <= step, 1)
+        candidate = candidate['who'][0]
+        get(pid, candidate, step, 'superior', step + 1, 'superior', step,
+            cond=lambda x: x['order'] == index_to_decision, ty='append')
     else:
-        while get_buf[pid]:
-            c = get_buf[pid].pop(0)
-            put(superior[pid][index_to_decision][0], c, superior[pid][index_to_decision][1])
-"""
+        a_gets = tables[pid]['get'].select(lambda x: x['remote_name'] == 'superior' and x['remote_step'] == step)
+        sz = len(a_gets['_step'])
+        for row_id in range(sz):
+            peer, local_name, local_step, cond, ty = a_gets['who'][row_id], a_gets['local_name'][row_id], \
+                                    a_gets['local_step'][row_id], a_gets['cond'][row_id], a_gets['type'][row_id]
+            put(pid, peer, local_name, local_step, items, ty=ty)
+        steps[pid] += 1
+
 
 def consensus():
     colors = ['green', 'blue', 'black', 'red']
@@ -202,13 +175,25 @@ def consensus():
         init(i)
     for idx in range(1, 4):
         for pid in node:
-            phase_1(0, idx, pid)
-        for pid in node:
-            phase_2(0, idx, pid)
-        for pid in node:
-            phase_2(0, idx, pid, ddl_gone=True)
-
-        quit()
+            steps[pid] = 1
+        flag = True
+        while flag:
+            for pid in node:
+                phase_1(0, idx, pid)
+            for pid in node:
+                phase_2(0, idx, pid)
+            for pid in node:
+                phase_2(0, idx, pid, ddl_gone=True)
+            for pid in node:
+                phase_3(0, idx, pid)
+            now = True
+            for pid in node:
+                now = now and steps[pid] > 3
+            flag = not now
+    for pid in node:
+        results =  tables[pid]['superior'].select(lambda x: True)
+        print(pid, results)
+    quit()
 
 
 if __name__ == '__main__':
